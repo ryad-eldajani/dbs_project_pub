@@ -1,6 +1,7 @@
 import re
 import psycopg2
 import itertools
+import html
 
 
 class Database:
@@ -151,6 +152,7 @@ class Importer:
         """
         Constructor for this importer.
         """
+        self.broken_line = ""
         self.entries = []
         self.parse_csv()
         self.query_database()
@@ -192,26 +194,62 @@ class Importer:
         re_pattern = re.compile(u'[^\u0000-\uD7FF\uE000-\uFFFF]', re.UNICODE)
         return re_pattern.sub(u'\uFFFD', text)
 
+    @staticmethod
+    def unescape_html(line):
+        """
+        Converts HTML entities (e.g. &amp;) into raw character (&).
+        :param line: Text line
+        :return: Unescaped text line
+        """
+        return html.unescape(line)
+
     def parse_line(self, line):
         """
         Parses a line.
         :param line: Raw text line
         :return: Dictionary of data in line or None if invalid data
         """
-        elements = line.split(';')
+        # handle previously broken lines
+        if self.broken_line == "":
+            full_line = self.unescape_html(line)
+        else:
+            full_line = self.unescape_html(self.broken_line + line)
+
+        elements = full_line.split(";")
+
+        # if the line is broken (last element not boolean), we need to fix it
+        if str(elements[-1]).rstrip() not in ["True", "False"]:
+            self.broken_line = self.broken_line + line
+            return None
+        else:
+            self.broken_line = ""
 
         # validate length of elements and first entry
-        if len(elements) != 11 or elements[0] not in ["HillaryClinton",
+        index_offset = 0
+        if len(elements) > 11:
+            # Sometimes, we have ";" in post texts, therefore, we have
+            # too much lines, fix that.
+            text = ""
+            i = 1
+            while i < len(elements) and elements[i] not in ["True", "False"]:
+                text = text + ";" + elements[i]
+                i += 1
+                index_offset += 1
+            index_offset -= 1
+        elif len(elements) < 11 or elements[0] not in ["HillaryClinton",
                                                       "realDonaldTrump"]:
             return None
+        else:
+            # line is okay
+            text = elements[1]
 
         return {
             "candidate": elements[0],
-            "text": self.cleanup_text(elements[1]),
-            "hashtags": self.parse_hashtags(line),
-            "time": str(elements[4]).replace("T", " "),  # ANSI SQL Timestamp
-            "retweet_count": elements[7],
-            "favorite_count": elements[8]
+            "text": self.cleanup_text(text),
+            "hashtags": self.parse_hashtags(text),
+            "time": str(elements[4 + index_offset]).replace("T", " "),  # ANSI SQL Timestamp
+            "retweet_count": elements[7 + index_offset],
+            "favorite_count": elements[8 + index_offset]
         }
 
     def parse_csv(self):
@@ -235,3 +273,4 @@ class Importer:
 
 if __name__ == "__main__":
     Importer()
+
